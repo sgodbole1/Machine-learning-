@@ -1,0 +1,1025 @@
+#glmnet has two parameters lambda and alpha, alpha is between 0-1 if alpha is 0 then lasso penalty becoems 0. Then just ridge regression. If alpha = 1 then ridge will be 0 and goes away.
+#equation : lambda x [alpha x (|varable1]+...+|variable2|) + (1-alpha)x(variable1^2+...+variable2^2)] Thus if alpha between 0 and 1 both penalties will be applied and better performance. 
+#if lambda 0 then linear/logistic, if lambda >1 elastic net. So basically we use glmnet to test different values of alpha and lambda.
+library(ggplot2)
+library(cowplot)
+library(randomForest)
+library(e1071)
+library(caret)
+library(rsample)   
+library(purrr)
+library(dplyr)
+library(plyr)
+library(grDevices)
+library(ROCR)
+library(scales)
+library(mlbench)
+library(kernlab)
+library(sessioninfo)
+theme_set(theme_bw())
+#library(tximport)
+#library(GenomicFeatures)
+#library(DESeq2)
+library(devtools)
+library(ggbiplot)
+#library(VIM)
+library(lubridate)
+library(outliers)
+#library(devtools)
+library(ggbiplot)
+library(reshape2)
+#library("factoextra")
+#library(FactoMineR)
+
+#Load the data : 
+
+# Load in the expression data obtained from TCGA:
+data.raw.exp <- read.delim("/home/shweta/Desktop/project new/BRCA.miRNAseq.expn_matrix_mimat_norm_passed_TCGA.697-tumor-samples.20111218.txt")
+head(data.raw.exp)
+
+
+#Load in the clinical data:
+data.raw.clinical <- read.delim("/home/shweta/Desktop/project new/nationwidechildrens.org_clinical_patient_public_brca.txt")
+head(data.raw.clinical)
+
+#Obtaining subset of clinical data that contains only sample name, PR,ER and HER2 status using: 
+
+
+subset.clinical <- data.raw.clinical %>% select(bcr_patient_barcode,    breast_carcinoma_progesterone_receptor_status, breast_carcinoma_estrogen_receptor_status, lab_proc_her2_neu_immunohistochemistry_receptor_status)
+head(subset.clinical)
+
+#Split sample names into strings : 
+
+## For expression data : 
+##print(colnames(exp_data[1, ]))
+
+
+#applying sapply on exp data to get a list, it will apply the function to all elements: 
+split.exp <- sapply(colnames(data.raw.exp[1, ]), function(x) strsplit(x , "[.]"))
+
+
+#remove first element : 
+
+split.exp[[1]] <- NULL
+class(split.exp)
+
+
+## For clinical data: 
+
+#Obtain just the first column containing the sample names : 
+column.name.clinical <- subset.clinical[1]
+head(column.name.clinical)
+
+# lapply on clin.col to obtain a list, it will apply the function to all elements of clin.col as follows:
+clinical.split <- lapply(column.name.clinical, function(x) strsplit(as.character(x), "-"))
+head(clinical.split)
+
+#Convert list to dataframe so that we can easily isloate the required data: 
+
+names.exp <- as.data.frame(split.exp)[3,]
+head(names.exp)
+
+
+
+#Convert into dataframe : 
+names.clinical <- as.data.frame(clinical.split)[3,]
+head(names.clinical)
+
+#Sort both data frames :
+
+#Expression dataframe : 
+names.sort.exp <- names.exp[order(names.exp[1,])]
+head(names.sort.exp)
+
+#Clinical dataframe : 
+
+names.sort.clinical <- names.clinical[order(names.clinical[1,])]
+head(names.sort.clinical)
+
+# To convert into vectors : 
+
+
+vect.exp <- unname(unlist(names.sort.exp[1,])) #
+head(vect.exp)
+
+vect.clinical <- unname(unlist(names.sort.clinical))
+head(vect.clinical)
+
+#To remove samples from clinical data which donot match expression data
+
+data.clean.clinical <- intersect(vect.exp,vect.clinical)
+head(data.clean.clinical)
+length(data.clean.clinical)
+
+# Match the above cleaned clinical data to corresponding sample IDs 
+
+
+data.final <- data.frame() #create an empty data frame 
+#i="A03L"
+# use for loop to extact the index of sample IDs corresponding to sample names in names.clinical then obtain rows using index and bind them into a new data frame and write it to a file
+for (i in data.clean.clinical) {     
+   index = which(i == names.clinical) #index from clinical sample
+   index1 = which(i == names.exp)     #index from expresion sample
+  
+   temp = subset.clinical[index, ]    #get names from clinical
+   temp1 = data.raw.exp[ ,index1+1]  # get miRNA exp levels corresponding to index, +1 because gene column was removed earlier
+   
+   row.names <- data.raw.exp[,1]  #miRNA names from exp data was obtained and set as row.names
+   #print(row.names)
+   exp.transpose <- t(data.frame(temp1, row.names = row.names)) #temp1 has miRNA exp values and rownames will be miRNA names and we do a transposase of that to get miRNA names as columns. 
+   #print(b[1,])
+   combined.data <- data.frame(c(temp,exp.transpose[1,])) #combining clinical information with transposed expression data
+   #print(a)
+   
+   #print(index)
+   #print(index1)
+   #print(temp1)
+   #print(temp)
+   data.final <- rbind(data.final,combined.data) #adding rows to dataframe using rbind, to get the final data with sample names as rows, and PR ER HER and miRNA expressions as columns
+}
+
+rownames(data.final) <- data.final[,1] #rename the rows of final data using column names 
+data.final <- data.final[,-1] #remove that first column so that it does not take that as a predictor too
+head(data.final)
+
+levels(factor(data.final[,3]))
+
+# Get sepearate datas for Pr, ER and her2 ( This is for entire data)
+
+
+# remove ER and Her2 receptor columns to get PR data
+
+data.PR <- data.final[, c(-2,-3)]
+head(data.PR)
+factors.PR <-  levels(factor(data.PR[,1]))
+head(factors.PR)
+#hist(as.numeric(data.PR[,1]))
+
+# Remove PR and Her2 to get ER data
+data.ER <- data.final[,c(-1,-3)]
+head(data.ER)
+factors.ER <- levels(factor(data.ER[,1]))
+factors.ER
+
+# Remove ER and PR to get Her2 status
+data.Her2 <- data.final[,c(-1,-2)]
+head(data.Her2)
+factors.Her2 <- levels(factor(data.Her2[,1]))
+factors.Her2
+
+
+# Plot the factors for PR, ER and her 2 :
+
+## Plot for PR factors : 
+
+
+# For PR we need to find the number of each factor, hence : 
+#For all factors of PR from data.final, we get the number of factors and their corresponding names as follows 
+PR <- c()
+
+for (i in levels(factor(data.PR[,1]))){               
+  PR <- c(PR,(length(which( i == data.PR[,1]))))
+  
+}
+
+names(PR)= levels(factor(data.PR[,1])) #get the names corresponding to those factors for PR
+PR
+
+#plot the graph
+barplot(PR)
+
+## Hence we see many positive and negatives and few in not performed or intermediate and exteremly less as performed but not available 
+
+## Alternate way 
+hist(as.numeric(data.final[,1]))
+
+## Plot for ER factors : 
+
+
+# For ER we need to find the number of each factor, hence : 
+#For all factors of ER from data.final, we get the number of factors and their corresponding names as follows 
+ER <- c()
+
+for (i in levels(factor(data.ER[,1]))){               
+  ER <- c(ER,(length(which( i == data.ER[,1]))))
+  
+}
+
+names(ER)= levels(factor(data.ER[,1])) #get the names corresponding to those factors for ER
+ER
+
+#plot the graph
+barplot(ER)
+
+## Hence we see many positive and negatives and few in not performed or intermediate and exteremly less as performed but not available 
+
+Her2 <- c()
+
+for (i in levels(factor(data.Her2[,1]))){               
+  Her2 <- c(Her2,(length(which( i == data.Her2[,1]))))
+  
+}
+
+names(Her2)= levels(factor(data.Her2[,1])) #get the names corresponding to those factors for ER
+Her2
+
+
+#plot the graph
+barplot(Her2)
+
+
+# Based on the graphs above, we will use only those data which corresponds to negative or positive PR, ER and her2 status:
+
+## FOR PR :
+
+
+
+factors <- c("Positive", "Negative")
+
+
+#head(levels((data.PR$breast_carcinoma_progesterone_receptor_status)))
+
+# To put the PR status column last
+head(data.PR[,1])
+temp.PR <- data.PR[,-1]
+head(temp.PR)
+predictors.PR <- temp.PR
+print(head(predictors.PR))
+temp_PR <- cbind(temp.PR,as.data.frame(data.PR[,1]))
+head(temp_PR)
+tail(colnames(temp_PR))
+
+#change column name : 
+
+names.temp.PR <- colnames(temp_PR[,-ncol(temp_PR)])
+names.temp.PR <- c(names.temp.PR, "PR")
+colnames(temp_PR) <- names.temp.PR
+tail(colnames(temp_PR))
+head(temp_PR$PR)
+
+data.PR <- temp_PR
+head(data.PR$PR)
+levels(factor(data.PR$PR))
+ncol(data.PR)
+
+#Use only data containing PR +/- 
+data.PR.f <- data.PR[which(data.PR$PR == factors),] #we take a subset of data.ER using factors +/-
+head(data.PR.f$PR)
+x_1 <- droplevels(data.PR.f)
+head(x_1$PR)
+data.PR <- x_1
+levels(data.PR$PR)
+
+#PCA
+data1 <- data.PR[,apply(data.PR[,-ncol(data.PR)], 2, function(x) all(x > 0))] 
+pca.result <- prcomp(data1,center = TRUE, scale. = TRUE)
+summary(pca.result)
+ggbiplot(pca.result,ellipse = TRUE, groups = data.PR$PR, main = "PCA for PR status")
+
+
+
+
+#clustering 
+scatterplot3d::scatterplot3d(data.PR[,-ncol(data.PR)], labels = rownames(data.PR))
+
+
+
+
+
+## For ER : 
+
+# To put the ER status column last
+head(data.ER[,1])
+temp.ER <- data.ER[,-1]
+head(temp.ER)
+predictors.ER <- temp.ER
+print(head(predictors.ER))
+temp_ER <- cbind(temp.ER,as.data.frame(data.ER[,1]))
+head(temp_ER)
+tail(colnames(temp_ER))
+
+#change column name : 
+
+names.temp.ER <- colnames(temp_ER[,-ncol(temp_ER)])
+names.temp.ER <- c(names.temp.ER, "ER")
+colnames(temp_ER) <- names.temp.ER
+tail(colnames(temp_ER))
+head(temp_ER$ER)
+
+data.ER <- temp_ER
+head(data.ER)
+levels(factor(data.ER$ER))
+ncol(data.ER)
+
+#Use only data containing ER +/- 
+data.ER.f <- data.ER[which(data.ER$ER == factors),] #we take a subset of data.ER using factors +/-
+head(data.ER.f$ER)
+y_1 <- droplevels(data.ER.f)
+head(y_1$ER)
+data.ER <- y_1
+levels(data.ER$ER)
+
+#pca
+data2 <- data.ER[,apply(data.ER[,-ncol(data.ER)], 2, function(x) all(x > 0))] 
+pca.result.ER <- prcomp(data2,center = TRUE, scale. = TRUE)
+summary(pca.result.ER)
+ggbiplot(pca.result.ER,ellipse = TRUE, groups = data.ER$ER, main = "PCA plot for ER status")
+
+
+
+## For HER 2 : 
+
+# To put the Her2 status column last
+head(data.Her2[,1])
+temp.H <- data.Her2[,-1]
+head(temp.H)
+predictors.H <- temp.H
+print(head(predictors.H))
+temp_H <- cbind(temp.H,as.data.frame(data.Her2[,1]))
+head(temp_H)
+tail(colnames(temp_H))
+
+#change column name : 
+
+names.temp.H <- colnames(temp_H[,-ncol(temp_H)])
+names.temp.H <- c(names.temp.H, "Her")
+colnames(temp_H) <- names.temp.H
+tail(colnames(temp_H))
+head(temp_H$Her)
+
+data.Her2 <- temp_H
+head(data.Her2)
+levels(factor(data.Her2$Her))
+ncol(data.Her2)
+
+#Use only data containing Her2 +/- 
+data.H.f <- data.Her2[which(data.Her2$Her == factors),] #we take a subset of data.ER using factors +/-
+head(data.H.f$Her)
+z_1 <- droplevels(data.H.f)
+head(z_1$Her)
+data.Her2 <- z_1
+levels(data.Her2$Her)
+head(data.Her2)
+
+#pca
+#pca
+data3 <- data.Her2[,apply(data.Her2[,-ncol(data.Her2)], 2, function(x) all(x > 0))] 
+pca.result.Her <- prcomp(data3,center = TRUE, scale. = TRUE)
+summary(pca.result.Her)
+ggbiplot(pca.result.Her,ellipse = TRUE, groups = data.Her2$Her, main = "PCA plot for Her2 status")
+
+
+# To determine the outliers : 
+#Observations  arising  from  large  variation  of  the  inherent  type  are  called  outliers.Many approaches have been proposed to detect  or  identify  the  outliers  based  on  density  based,  distance  based,  distribution  based  and clustering based approaches. 
+
+#Median and trimmed mean are robust measures of location. For the measure of dispersion we can use the normalized median absolute deviation #(MADN). For a set of data the median absolute deviation(MADN). It is defined as : 
+#MAD (x) = Med {|x–Med (x)|}
+#To  make  the  MAD  comparable  to  the  SD  in  terms  of  efficiency,  we  consider  the  normalized MAD defined asMADN (x) = MAD (x) / #0.6745
+#Then Robust t like StatisticLet  us  now  use  the  robust  plug-in  technique  Imon,  Midi  and  Rana  (2013)  to  obtain  a robust  t-like  #statistic  by  replacing  mean  by  median  and  SD  by  the  normalized  median  absolute deviation (MADN). Thus the modified statistic #becomes :
+
+#t #= #xi #- #median(x)
+    #---------------
+       #MADN(x)
+       
+#Observations with |t'| >3 are identified as outliers. 
+
+## For PR : 
+#PR data without PR column
+
+data.PR_PR <- data.PR[,-ncol(data.PR)]
+head(data.PR_PR)
+
+calcul.mad <- function(x) {
+mad <- median(abs(x-median(x, na.rm=TRUE))) 
+mad}
+#print(head(mad))
+
+uper.interval <- function(x,y) {
+up.inter <- median(x, na.rm=TRUE)+2*(y) 
+up.inter}
+#print(head(up.inter))
+
+lower.interval <- function(x,y) {
+low.inter <- median(x, na.rm=TRUE)-2*(y)
+low.inter}
+#print(head(low.inter)))
+
+functionData <- function(x,h,l) {
+out <- ifelse(x > h, h, ifelse(x < l, l, x))
+out}
+#print(head(out))
+
+
+outlier.fun <- function(column1) {
+  med_data <- median(column1, na.rm=TRUE)
+  cal_mad <- calcul.mad(column1)
+  up_data <- uper.interval(med_data, cal_mad)
+  low_data <- lower.interval(med_data, cal_mad)
+  column_without_outliers <- functionData(column1, up_data, low_data)
+
+  return(column_without_outliers)
+  }
+
+data_PR_noout <- apply(data.PR_PR, 2, outlier.fun) #data, margin is 2 which means on columns 
+
+summary(data.PR_PR)
+summary(data_PR_noout)
+ncol(data_PR_noout)
+str(summary(data.PR_PR))
+str(summary(data_PR_noout))
+ncol(data_PR_noout)
+
+boxplot(data.PR_PR)
+boxplot(data_PR_noout)
+
+
+
+
+
+
+
+
+# Random Forest
+
+# For PR :
+
+set.seed(123)
+
+
+#create general rf train function.
+PR.train.data <- function(rf.data.PR, k_folds.PR=10){
+
+
+rf.models.PR = list()
+rf.outer.models.PR = list()
+rf.test.index.list.PR = sample(1:nrow(rf.data.PR),k_folds.PR) #reduce bias via random sampling
+LOO.index.PR <- 1
+rf.test.PR <- c()
+
+for (i in 1:k_folds.PR) {
+  rf.train.data.PR <- rf.data.PR[-rf.test.index.list.PR[LOO.index.PR],]
+  rf.test.data.PR <- rf.data.PR[rf.test.index.list.PR[LOO.index.PR],]
+  rf.test.PR <- c(rf.test.PR, rf.test.data.PR$PR)
+  #print(tibble(train.data))
+  #print(tibble(test.data$))
+  print(LOO.index.PR)
+  
+  #print(rf.test.index.list.PR[LOO.index.PR])
+  
+  #print(test.data$PR2)
+  
+  #print(train.data$PR)
+  print("-----")
+  
+   
+  rf.values.PR = c()
+  rf.avg_errors.PR <- c()
+  for (j in 1:(k_folds.PR-1)) {
+  
+    print(j)
+    
+    
+    train.rf.PR <- trainControl(method = "cv", number  = 10, classProbs = TRUE)
+    model.PR.rf <- train(PR ~ . , data = rf.train.data.PR, tuneLength = 10, method = 'rf', trControl = train.rf.PR, metric = "Kappa", preProc = c("center", "scale"))
+    
+    rf.models.PR[[j]] <- model.PR.rf
+    #print(rf.models.PR[[j]])
+    
+    
+    rf.avg_error.PR <- mean(model.PR.rf$results$Accuracy)
+    
+    rf.avg_errors.PR <- c(rf.avg_errors.PR,rf.avg_error.PR)
+    #print(rf.avg_errors.PR)
+    # saveRDS(avg_errors.PR, file = "/data/vkarthik/shoo/scripts/PR.rf") 
+    
+    
+    #End of inner loop
+    
+  }
+  
+  #minimum deviance from mean
+ 
+  for (element.PR in rf.avg_errors.PR) {
+    rf.value.PR <- abs(mean(rf.avg_errors.PR)-element.PR)
+    #print(rf.value.PR)
+    rf.values.PR <- c(rf.values.PR, rf.value.PR)
+    #print(rf.values.PR)
+    #print(element.PR)
+    
+  }
+  #print(length(rf.values.PR))
+  
+  # to show which model was selected : 
+  
+ 
+  rf.optimal.index.PR <- which(min(rf.values.PR)== rf.values.PR) #get index of models which have min value of deviance from mean of accuracy
+  print(rf.optimal.index.PR)
+  #since many models were performing same, with same accuracies , we randomly choose a model
+    if(length(rf.optimal.index.PR) > 1){
+      rf.optimal.index.PR = sample(1:length(rf.optimal.index.PR),1)
+    }
+    rf.models.PR[[rf.optimal.index.PR]]
+  
+   print(rf.models.PR[[rf.optimal.index.PR]]$bestTune)#get the model corresponding to that index 
+  
+  
+  #Pick out the best hyperparameters and train on that then calculate  std error:
+   #outer training
+  rf.value.grid.PR <- expand.grid(.mtry = rf.models.PR[[rf.optimal.index.PR]]$bestTune$mtry)
+  PR.train.rf <- trainControl(method = "cv", number  = 10, classProbs = TRUE)
+  final_model.PR.rf <- train(PR ~ . , data = rf.train.data.PR, tuneLength = 10, method = 'rf', trControl = PR.train.rf,tuneGrid = rf.value.grid , preProc = c("center", "scale"),na.action = na.fail)
+   # print(final_model.PR.rf)
+    rf.outer.models.PR[[i]] <- final_model.PR.rf
+    print(rf.outer.models.PR)
+     #saveRDS(rf.outer.models.PR, file = "/data/vkarthik/shoo/scripts/PR.rf") 
+  
+    
+    LOO.index.PR <- LOO.index.PR + 1
+}
+
+
+    #std errors : 
+    #get the mean of all accuracies : 
+    #we get a list as model output, so we select specific items and since result was 4th we use lapply on 4th and then accuracy was 3rd so we use lapply for 3 to get accuracy values
+    
+    rf.accuracies.PR <- unlist(lapply(lapply(rf.outer.models.PR, '[[', 4),'[[',3))
+    #print(rf.accuracies.PR)
+    rf.outer_mean.PR <- mean(rf.accuracies.PR) 
+    #print(outer_mean.PR)
+    
+    
+   
+    rf.outer_values.PR <- c()
+  for (number.PR in rf.accuracies.PR) {
+    rf.outer_value.PR <- (rf.outer_mean.PR - number.PR)^2
+    #print(rf.outer_value.PR)
+    rf.outer_values.PR <- c(rf.outer_values.PR, rf.outer_value.PR)
+    #print(rf.outer_values.PR)
+  }
+  
+    rf.sd_outer.PR <- sd(rf.outer_values.PR)
+    print(rf.sd_outer.PR)
+    
+    #standard error will be sd of sqrt of sample size 
+    rf.std_error.PR <- rf.sd_outer.PR/ sqrt(length(rf.data))
+    #print(rf.std_error.PR)
+     #saveRDS(rf.std_error.PR, file = "/data/vkarthik/shoo/scripts/PR.rf") 
+    
+     #To choose a model to be used for testing the data :
+    rf.outer_vs.PR <- c()  
+    for (number.PR in rf.outer_values.PR) {
+    rf.outer_v.PR <- (rf.std_error.PR - number.PR)^2
+    #print(rf.outer_v.PR)
+    rf.outer_vs.PR <- c(rf.outer_vs.PR, rf.outer_v.PR)
+    
+      }
+    
+    #print(rf.outer_vs.PR)
+    
+    #Choose the model : 
+    rf.final_index.PR <- which(min(rf.outer_vs.PR) == rf.outer_vs.PR)
+    #print(rf.final_index.PR)
+     #saveRDS(rf.final_index.PR, file = "/data/vkarthik/shoo/scripts/PR.rf") 
+    
+     plot.new()
+  
+   #plot of model selection
+    png(file="RF train for PR.png",width=640,height=480)
+   { plot(rf.avg_errors, type = "line", main = "Model selected to train Random Forest for PR status")
+    abline(h = mean(rf.avg_errors))
+    abline(v = rf.optimal.index)}
+    dev.off()
+     
+     plot.new()
+    png(file="RF test for PR.png",width=640,height=480)
+    #plot of model selection
+   { plot(rf.avg_errors, type = "line", main = "Model selected to test Random Forest for PR status")
+    abline(h = mean(rf.avg_errors))
+    abline(v = rf.final_index)}
+    dev.off()
+    
+    
+    #since many models were performing same, with same accuracies , we randomly choose a model
+    if(length(rf.final_index.PR) > 1){
+      rf.final_index.PR = sample(1:length(rf.final_index.PR),1)
+    }
+    rf.outer.models.PR[[rf.final_index.PR]]
+    
+    
+    #Test data 
+  
+    predict.PR.rf <- predict(rf.outer.models.PR[[rf.final_index.PR]], rf.test.data.PR)
+    print(predict.PR.rf)
+     #saveRDS(predict.PR.rf, file = "/data/vkarthik/shoo/output/PR.rf") 
+    plot.new()
+    png(file="RF predict for PR.png",width=640,height=480)
+    plot(predict.PR.rf)
+    dev.off()
+
+   
+saveRDS(rf.avg_errors.PR, file = "/data/vkarthik/shoo/scripts/avg_err_PR_rf.rds")
+saveRDS(rf.std_error.PR, file = "/data/vkarthik/shoo/scripts/std_err_PR_rf.rds")  
+saveRDS(rf.test.PR, file = "/data/vkarthik/shoo/scripts/test_PR_rf.rds")
+saveRDS(predict.PR.rf, file = "/data/vkarthik/shoo/scripts/predict_PR_rf.rds") 
+saveRDS(rf.final_index.PR, file = "/data/vkarthik/shoo/scripts/final_idx_PR_rf.rds")  
+saveRDS(mean(rf.avg_errors.PR,  file = "/data/vkarthik/shoo/scripts/mean_PR_rf.rds")
+  
+   
+  return(rf.outer.models.PR[[rf.final_index.PR]])
+
+}
+
+
+
+ rf.PR <- PR.train.data(data.PR, 10)
+ rf.PR
+
+
+# For ER :
+
+set.seed(123)
+
+
+#create general rf train function.
+ER.train.data <- function(rf.data.ER, k_folds.ER=10){
+
+
+rf.models.ER = list()
+rf.outer.models.ER = list()
+rf.test.index.list.ER = sample(1:nrow(rf.data.ER),k_folds.ER) #reduce bias via random sampling
+LOO.index.ER <- 1
+rf.test.ER <- c()
+
+for (i in 1:k_folds.ER) {
+  rf.train.data.ER <- rf.data.ER[-rf.test.index.list.ER[LOO.index.ER],]
+  rf.test.data.ER <- rf.data.ER[rf.test.index.list.ER[LOO.index.ER],]
+  rf.test.ER <- c(rf.test.ER, rf.test.data.ER$ER)
+  #print(tibble(train.data))
+  #print(tibble(test.data$))
+  print(LOO.index.ER)
+  
+  #print(rf.test.index.list.ER[LOO.index.ER])
+  
+  #print(test.data$PR2)
+  
+  #print(train.data$PR)
+  print("-----")
+  
+   
+  rf.values.ER = c()
+  rf.avg_errors.ER <- c()
+  for (j in 1:(k_folds.ER-1)) {
+  
+    print(j)
+    
+    
+    train.rf.ER <- trainControl(method = "cv", number  = 10, classProbs = TRUE)
+    model.ER.rf <- train(ER ~ . , data = rf.train.data.ER, tuneLength = 10, method = 'rf', trControl = train.rf.ER, metric = "Kappa", preProc = c("center", "scale"))
+    
+    rf.models.ER[[j]] <- model.ER.rf
+    #print(rf.models.ER[[j]])
+    
+    
+    rf.avg_error.ER <- mean(model.ER.rf$results$Accuracy)
+    
+    rf.avg_errors.ER <- c(rf.avg_errors.ER,rf.avg_error.ER)
+    #print(rf.avg_errors.ER)
+    # saveRDS(avg_errors.ER, file = "/data/vkarthik/shoo/scripts/ER.rf") 
+    
+    
+    #End of inner loop
+    
+  }
+  
+  #minimum deviance from mean
+ 
+  for (element.ER in rf.avg_errors.ER) {
+    rf.value.ER <- abs(mean(rf.avg_errors.ER)-element.ER)
+    #print(rf.value.ER)
+    rf.values.ER <- c(rf.values.ER, rf.value.ER)
+    #print(rf.values.ER)
+    #print(element.ER)
+    
+  }
+  #print(length(rf.values.ER))
+  
+  # to show which model was selected : 
+  
+ 
+  rf.optimal.index.ER <- which(min(rf.values.ER)== rf.values.ER) #get index of models which have min value of deviance from mean of accuracy
+  print(rf.optimal.index.ER)
+  #since many models were performing same, with same accuracies , we randomly choose a model
+    if(length(rf.optimal.index.ER) > 1){
+      rf.optimal.index.ER = sample(1:length(rf.optimal.index.ER),1)
+    }
+    rf.models.ER[[rf.optimal.index.ER]]
+  
+   print(rf.models.ER[[rf.optimal.index.ER]]$bestTune)#get the model corresponding to that index 
+  
+  
+  #Pick out the best hyperparameters and train on that then calculate  std error:
+   #outer training
+  rf.value.grid.ER <- expand.grid(.mtry = rf.models.ER[[rf.optimal.index.ER]]$bestTune$mtry)
+  ER.train.rf <- trainControl(method = "cv", number  = 10, classProbs = TRUE)
+  final_model.ER.rf <- train(ER ~ . , data = rf.train.data.ER, tuneLength = 10, method = 'rf', trControl = ER.train.rf,tuneGrid = rf.value.grid , preProc = c("center", "scale"),na.action = na.fail)
+   # print(final_model.ER.rf)
+    rf.outer.models.ER[[i]] <- final_model.ER.rf
+    print(rf.outer.models.ER)
+     #saveRDS(rf.outer.models.ER, file = "/data/vkarthik/shoo/scripts/ER.rf") 
+  
+    
+    LOO.index.ER <- LOO.index.ER + 1
+}
+
+
+    #std errors : 
+    #get the mean of all accuracies : 
+    #we get a list as model output, so we select specific items and since result was 4th we use lapply on 4th and then accuracy was 3rd so we use lapply for 3 to get accuracy values
+    
+    rf.accuracies.ER <- unlist(lapply(lapply(rf.outer.models.ER, '[[', 4),'[[',3))
+    #print(rf.accuracies.ER)
+    rf.outer_mean.ER <- mean(rf.accuracies.ER) 
+    #print(outer_mean.ER)
+    
+    
+   
+    rf.outer_values.ER <- c()
+  for (number.ER in rf.accuracies.ER) {
+    rf.outer_value.ER <- (rf.outer_mean.ER - number.ER)^2
+    #print(rf.outer_value.ER)
+    rf.outer_values.ER <- c(rf.outer_values.ER, rf.outer_value.ER)
+    #print(rf.outer_values.ER)
+  }
+  
+    rf.sd_outer.ER <- sd(rf.outer_values.ER)
+    print(rf.sd_outer.ER)
+    
+    #standard error will be sd of sqrt of sample size 
+    rf.std_error.ER <- rf.sd_outer.ER/ sqrt(length(rf.data))
+    #print(rf.std_error.ER)
+     #saveRDS(rf.std_error.ER, file = "/data/vkarthik/shoo/scripts/ER.rf") 
+    
+     #To choose a model to be used for testing the data :
+    rf.outer_vs.ER <- c()  
+    for (number.ER in rf.outer_values.ER) {
+    rf.outer_v.ER <- (rf.std_error.ER - number.ER)^2
+    #print(rf.outer_v.ER)
+    rf.outer_vs.ER <- c(rf.outer_vs.ER, rf.outer_v.ER)
+    
+      }
+    
+    #print(rf.outer_vs.ER)
+    
+    #Choose the model : 
+    rf.final_index.ER <- which(min(rf.outer_vs.ER) == rf.outer_vs.ER)
+    #print(rf.final_index.ER)
+     #saveRDS(rf.final_index.ER, file = "/data/vkarthik/shoo/scripts/ER.rf") 
+    
+     plot.new()
+  
+   #plot of model selection
+    png(file="RF train for ER.png",width=640,height=480)
+   { plot(rf.avg_errors, type = "line", main = "Model selected to train Random Forest for ER status")
+    abline(h = mean(rf.avg_errors))
+    abline(v = rf.optimal.index)}
+    dev.off()
+     
+     plot.new()
+    png(file="RF test for ER.png",width=640,height=480)
+    #plot of model selection
+   { plot(rf.avg_errors, type = "line", main = "Model selected to test Random Forest for ER status")
+    abline(h = mean(rf.avg_errors))
+    abline(v = rf.final_index)}
+    dev.off()
+    
+    
+    #since many models were performing same, with same accuracies , we randomly choose a model
+    if(length(rf.final_index.ER) > 1){
+      rf.final_index.ER = sample(1:length(rf.final_index.ER),1)
+    }
+    rf.outer.models.ER[[rf.final_index.ER]]
+    
+    
+    #Test data 
+  
+    predict.ER.rf <- predict(rf.outer.models.ER[[rf.final_index.ER]], rf.test.data.ER)
+    print(predict.ER.rf)
+     #saveRDS(predict.ER.rf, file = "/data/vkarthik/shoo/output/ER.rf") 
+    plot.new()
+    png(file="RF predict for ER.png",width=640,height=480)
+    plot(predict.ER.rf)
+    dev.off()
+
+   
+saveRDS(rf.avg_errors.ER, file = "/data/vkarthik/shoo/scripts/avg_err_ER_rf.rds")
+saveRDS(rf.std_error.ER, file = "/data/vkarthik/shoo/scripts/std_err_ER_rf.rds")  
+saveRDS(rf.test.ER, file = "/data/vkarthik/shoo/scripts/test_ER_rf.rds")
+saveRDS(predict.ER.rf, file = "/data/vkarthik/shoo/scripts/predict_ER_rf.rds") 
+saveRDS(rf.final_index.ER, file = "/data/vkarthik/shoo/scripts/final_idx_ER_rf.rds")  
+saveRDS(mean(rf.avg_errors.ER,  file = "/data/vkarthik/shoo/scripts/mean_ER_rf.rds")
+  
+   
+  return(rf.outer.models.ER[[rf.final_index.ER]])
+
+}
+
+
+
+ rf.ER <- ER.train.data(data.ER, 10)
+ rf.ER
+
+
+# For Her2 :
+
+set.seed(123)
+
+
+#create general rf train function.
+H.train.data <- function(rf.data.H, k_folds.H=10){
+
+
+rf.models.H = list()
+rf.outer.models.H = list()
+rf.test.index.list.H = sample(1:nrow(rf.data.H),k_folds.H) #reduce bias via random sampling
+LOO.index.H <- 1
+rf.test.H <- c()
+
+for (i in 1:k_folds.H) {
+  rf.train.data.H <- rf.data.PR[-rf.test.index.list.H[LOO.index.H],]
+  rf.test.data.H <- rf.data.H[rf.test.index.list.H[LOO.index.H],]
+  rf.test.H <- c(rf.test.H, rf.test.data.H$Her)
+  #print(tibble(train.data))
+  #print(tibble(test.data$Her))
+  print(LOO.index.H)
+  
+  #print(rf.test.index.list.H[LOO.index.H])
+  
+  #print(test.data$Her)
+  
+  #Hint(train.data$Her)
+  print("-----")
+  
+   
+  rf.values.H = c()
+  rf.avg_errors.H <- c()
+  for (j in 1:(k_folds.H-1)) {
+  
+    print(j)
+    
+    
+    train.rf.H <- trainControl(method = "cv", number  = 10, classProbs = TRUE)
+    model.H.rf <- train(Her ~ . , data = rf.train.data.H, tuneLength = 10, method = 'rf', trControl = train.rf.H, metric = "Kappa", preProc = c("center", "scale"))
+    
+    rf.models.H[[j]] <- model.H.rf
+    #print(rf.models.H[[j]])
+    
+    
+    rf.avg_error.H <- mean(model.H.rf$results$Accuracy)
+    
+    rf.avg_errors.H <- c(rf.avg_errors.H,rf.avg_error.H)
+    #print(rf.avg_errors.H)
+    # saveRDS(avg_errors.H, file = "/data/vkarthik/shoo/scripts/H.rf") 
+    
+    
+    #End of inner loop
+    
+  }
+  
+  #minimum deviance from mean
+ 
+  for (element.H in rf.avg_errors.H) {
+    rf.value.H <- abs(mean(rf.avg_errors.H)-element.H)
+    #print(rf.value.H)
+    rf.values.H <- c(rf.values.H, rf.value.H)
+    #print(rf.values.H)
+    #print(element.H)
+    
+  }
+  #print(length(rf.values.H))
+  
+  # to show which model was selected : 
+  
+ 
+  rf.optimal.index.H <- which(min(rf.values.H)== rf.values.H) #get index of models which have min value of deviance from mean of accuracy
+  Hint(rf.optimal.index.H)
+  #since many models were performing same, with same accuracies , we randomly choose a model
+    if(length(rf.optimal.index.H) > 1){
+      rf.optimal.index.H = sample(1:length(rf.optimal.index.H),1)
+    }
+    rf.models.H[[rf.optimal.index.H]]
+  
+   print(rf.models.H[[rf.optimal.index.H]]$bestTune)#get the model corresponding to that index 
+  
+  
+  #Pick out the best hyperparameters and train on that then calculate  std error:
+   #outer training
+  rf.value.grid.H <- expand.grid(.mtry = rf.models.H[[rf.optimal.index.H]]$bestTune$mtry)
+  H.train.rf <- trainControl(method = "cv", number  = 10, classProbs = TRUE)
+  final_model.H.rf <- train(Her ~ . , data = rf.train.data.H, tuneLength = 10, method = 'rf', trControl = H.train.rf,tuneGrid = rf.value.grid , preProc = c("center", "scale"),na.action = na.fail)
+   # print(final_model.H.rf)
+    rf.outer.models.H[[i]] <- final_model.H.rf
+    print(rf.outer.models.H)
+     #saveRDS(rf.outer.models.H, file = "/data/vkarthik/shoo/scripts/H.rf") 
+  
+    
+    LOO.index.H <- LOO.index.H + 1
+}
+
+
+    #std errors : 
+    #get the mean of all accuracies : 
+    #we get a list as model output, so we select specific items and since result was 4th we use lapply on 4th and then accuracy was 3rd so we use lapply for 3 to get accuracy values
+    
+    rf.accuracies.H <- unlist(lapply(lapply(rf.outer.models.H, '[[', 4),'[[',3))
+    #print(rf.accuracies.H)
+    rf.outer_mean.H <- mean(rf.accuracies.H) 
+    #print(outer_mean.H)
+    
+    
+   
+    rf.outer_values.H <- c()
+  for (number.H in rf.accuracies.H) {
+    rf.outer_value.H <- (rf.outer_mean.H - number.H)^2
+    #print(rf.outer_value.H)
+    rf.outer_values.H <- c(rf.outer_values.H, rf.outer_value.H)
+    #print(rf.outer_values.H)
+  }
+  
+    rf.sd_outer.H <- sd(rf.outer_values.H)
+    print(rf.sd_outer.H)
+    
+    #standard error will be sd of sqrt of sample size 
+    rf.std_error.H <- rf.sd_outer.H/ sqrt(length(rf.data))
+    #print(rf.std_error.H)
+     #saveRDS(rf.std_error.H, file = "/data/vkarthik/shoo/scripts/H.rf") 
+    
+     #To choose a model to be used for testing the data :
+    rf.outer_vs.H <- c()  
+    for (number.H in rf.outer_values.H) {
+    rf.outer_v.H <- (rf.std_error.H - number.H)^2
+    #print(rf.outer_v.H)
+    rf.outer_vs.H <- c(rf.outer_vs.H, rf.outer_v.H)
+    
+      }
+    
+    #print(rf.outer_vs.H)
+    
+    #Choose the model : 
+    rf.final_index.H <- which(min(rf.outer_vs.H) == rf.outer_vs.H)
+    #print(rf.final_index.H)
+     #saveRDS(rf.final_index.H, file = "/data/vkarthik/shoo/scripts/H.rf") 
+    
+     plot.new()
+  
+   #plot of model selection
+    png(file="RF train for H.png",width=640,height=480)
+   { plot(rf.avg_errors, type = "line", main = "Model selected to train Random Forest for H status")
+    abline(h = mean(rf.avg_errors))
+    abline(v = rf.optimal.index)}
+    dev.off()
+     
+     plot.new()
+    png(file="RF test for H.png",width=640,height=480)
+    #plot of model selection
+   { plot(rf.avg_errors, type = "line", main = "Model selected to test Random Forest for H status")
+    abline(h = mean(rf.avg_errors))
+    abline(v = rf.final_index)}
+    dev.off()
+    
+    
+    #since many models were performing same, with same accuracies , we randomly choose a model
+    if(length(rf.final_index.H) > 1){
+      rf.final_index.H = sample(1:length(rf.final_index.H),1)
+    }
+    rf.outer.models.H[[rf.final_index.H]]
+    
+    
+    #Test data 
+  
+    predict.H.rf <- predict(rf.outer.models.H[[rf.final_index.H]], rf.test.data.H)
+    print(predict.H.rf)
+     #saveRDS(predict.H.rf, file = "/data/vkarthik/shoo/output/H.rf") 
+    plot.new()
+    png(file="RF predict for H.png",width=640,height=480)
+    plot(predict.H.rf)
+    dev.off()
+
+   
+saveRDS(rf.avg_errors.H, file = "/data/vkarthik/shoo/scripts/avg_err_H_rf.rds")
+saveRDS(rf.std_error.H, file = "/data/vkarthik/shoo/scripts/std_err_H_rf.rds")  
+saveRDS(rf.test.H, file = "/data/vkarthik/shoo/scripts/test_H_rf.rds")
+saveRDS(predict.H.rf, file = "/data/vkarthik/shoo/scripts/predict_H_rf.rds") 
+saveRDS(rf.final_index.H, file = "/data/vkarthik/shoo/scripts/final_idx_H_rf.rds")  
+saveRDS(mean(rf.avg_errors.H,  file = "/data/vkarthik/shoo/scripts/mean_H_rf.rds")
+  
+   
+  return(rf.outer.models.H[[rf.final_index.H]])
+
+}
+
+
+
+ rf.H <- H.train.data(data.Her2, 10)
+ rf.H
+
+

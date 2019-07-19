@@ -1,0 +1,1020 @@
+#ridge will be 0 and goes away.
+#equation : lambda x [alpha x (|varable1]+...+|variable2|) + (1-alpha)x(variable1^2+...+variable2^2)] Thus if alpha between 0 and 1 both penalties will be applied and better performance. 
+#if lambda 0 then linear/logistic, if lambda >1 elastic net. So basically we use glmnet to test different values of alpha and lambda.
+library(ggplot2)
+library(cowplot)
+library(randomForest)
+library(e1071)
+library(caret)
+library(rsample)   
+library(purrr)
+library(dplyr)
+library(plyr)
+library(grDevices)
+library(scales)
+library(mlbench)
+library(kernlab)
+library(sessioninfo)
+theme_set(theme_bw())
+#library(tximport)
+#library(GenomicFeatures)
+#library(DESeq2)
+#library(devtools)
+library(ggbiplot)
+#library(VIM)
+library(ROCR)
+library(lubridate)
+library(outliers)
+#library(devtools)
+#library(ggbiplot)
+library(reshape2)
+#library("factoextra")
+#library(FactoMineR)
+
+#Load the data : 
+
+# Load in the expression data obtained from TCGA:
+data.raw.exp <- read.delim("/data/vkarthik/shoo/BRCA.miRNAseq.expn_matrix_mimat_norm_passed_TCGA.697-tumor-samples.20111218.txt")
+head(data.raw.exp)
+
+
+#Load in the clinical data:
+data.raw.clinical <- read.delim("/data/vkarthik/shoo/nationwidechildrens.org_clinical_patient_public_brca.txt")
+head(data.raw.clinical)
+
+#Obtaining subset of clinical data that contains only sample name, PR,ER and HER2 status using: 
+
+
+subset.clinical <- data.raw.clinical %>% select(bcr_patient_barcode,    breast_carcinoma_progesterone_receptor_status, breast_carcinoma_estrogen_receptor_status, lab_proc_her2_neu_immunohistochemistry_receptor_status)
+head(subset.clinical)
+
+#Split sample names into strings : 
+
+## For expression data : 
+##print(colnames(exp_data[1, ]))
+
+
+#applying sapply on exp data to get a list, it will apply the function to all elements: 
+split.exp <- sapply(colnames(data.raw.exp[1, ]), function(x) strsplit(x , "[.]"))
+
+
+#remove first element : 
+
+split.exp[[1]] <- NULL
+class(split.exp)
+
+
+## For clinical data: 
+
+#Obtain just the first column containing the sample names : 
+column.name.clinical <- subset.clinical[1]
+head(column.name.clinical)
+
+# lapply on clin.col to obtain a list, it will apply the function to all elements of clin.col as follows:
+clinical.split <- lapply(column.name.clinical, function(x) strsplit(as.character(x), "-"))
+head(clinical.split)
+
+#Convert list to dataframe so that we can easily isloate the required data: 
+
+names.exp <- as.data.frame(split.exp)[3,]
+head(names.exp)
+
+
+
+#Convert into dataframe : 
+names.clinical <- as.data.frame(clinical.split)[3,]
+head(names.clinical)
+
+#Sort both data frames :
+
+#Expression dataframe : 
+names.sort.exp <- names.exp[order(names.exp[1,])]
+head(names.sort.exp)
+
+#Clinical dataframe : 
+
+names.sort.clinical <- names.clinical[order(names.clinical[1,])]
+head(names.sort.clinical)
+
+# To convert into vectors : 
+
+
+vect.exp <- unname(unlist(names.sort.exp[1,])) #
+head(vect.exp)
+
+vect.clinical <- unname(unlist(names.sort.clinical))
+head(vect.clinical)
+
+#To remove samples from clinical data which donot match expression data
+
+data.clean.clinical <- intersect(vect.exp,vect.clinical)
+head(data.clean.clinical)
+length(data.clean.clinical)
+
+# Match the above cleaned clinical data to corresponding sample IDs 
+
+
+data.final <- data.frame() #create an empty data frame 
+#i="A03L"
+# use for loop to extact the index of sample IDs corresponding to sample names in names.clinical then obtain rows using index and bind them into a new data frame and write it to a file
+for (i in data.clean.clinical) {     
+   index = which(i == names.clinical) #index from clinical sample
+   index1 = which(i == names.exp)     #index from expresion sample
+  
+   temp = subset.clinical[index, ]    #get names from clinical
+   temp1 = data.raw.exp[ ,index1+1]  # get miRNA exp levels corresponding to index, +1 because gene column was removed earlier
+   
+   row.names <- data.raw.exp[,1]  #miRNA names from exp data was obtained and set as row.names
+   #print(row.names)
+   exp.transpose <- t(data.frame(temp1, row.names = row.names)) #temp1 has miRNA exp values and rownames will be miRNA names and we do a transposase of that to get miRNA names as columns. 
+   #print(b[1,])
+   combined.data <- data.frame(c(temp,exp.transpose[1,])) #combining clinical information with transposed expression data
+   #print(a)
+   
+   #print(index)
+   #print(index1)
+   #print(temp1)
+   #print(temp)
+   data.final <- rbind(data.final,combined.data) #adding rows to dataframe using rbind, to get the final data with sample names as rows, and PR ER HER and miRNA expressions as columns
+}
+
+rownames(data.final) <- data.final[,1] #rename the rows of final data using column names 
+data.final <- data.final[,-1] #remove that first column so that it does not take that as a predictor too
+head(data.final)
+
+levels(factor(data.final[,3]))
+
+# Get sepearate datas for Pr, ER and her2 ( This is for entire data)
+
+
+# remove ER and Her2 receptor columns to get PR data
+
+data.PR <- data.final[, c(-2,-3)]
+head(data.PR)
+factors.PR <-  levels(factor(data.PR[,1]))
+head(factors.PR)
+#hist(as.numeric(data.PR[,1]))
+
+# Remove PR and Her2 to get ER data
+data.ER <- data.final[,c(-1,-3)]
+head(data.ER)
+factors.ER <- levels(factor(data.ER[,1]))
+factors.ER
+
+# Remove ER and PR to get Her2 status
+data.Her2 <- data.final[,c(-1,-2)]
+head(data.Her2)
+factors.Her2 <- levels(factor(data.Her2[,1]))
+factors.Her2
+
+
+# Plot the factors for PR, ER and her 2 :
+
+## Plot for PR factors : 
+
+
+# For PR we need to find the number of each factor, hence : 
+#For all factors of PR from data.final, we get the number of factors and their corresponding names as follows 
+PR <- c()
+
+for (i in levels(factor(data.PR[,1]))){               
+  PR <- c(PR,(length(which( i == data.PR[,1]))))
+  
+}
+
+names(PR)= levels(factor(data.PR[,1])) #get the names corresponding to those factors for PR
+PR
+
+#plot the graph
+barplot(PR)
+
+## Hence we see many positive and negatives and few in not performed or intermediate and exteremly less as performed but not available 
+
+## Alternate way 
+hist(as.numeric(data.final[,1]))
+
+## Plot for ER factors : 
+
+
+# For ER we need to find the number of each factor, hence : 
+#For all factors of ER from data.final, we get the number of factors and their corresponding names as follows 
+ER <- c()
+
+for (i in levels(factor(data.ER[,1]))){               
+  ER <- c(ER,(length(which( i == data.ER[,1]))))
+  
+}
+
+names(ER)= levels(factor(data.ER[,1])) #get the names corresponding to those factors for ER
+ER
+
+#plot the graph
+barplot(ER)
+
+## Hence we see many positive and negatives and few in not performed or intermediate and exteremly less as performed but not available 
+
+Her2 <- c()
+
+for (i in levels(factor(data.Her2[,1]))){               
+  Her2 <- c(Her2,(length(which( i == data.Her2[,1]))))
+  
+}
+
+names(Her2)= levels(factor(data.Her2[,1])) #get the names corresponding to those factors for ER
+Her2
+
+
+#plot the graph
+barplot(Her2)
+
+
+# Based on the graphs above, we will use only those data which corresponds to negative or positive PR, ER and her2 status:
+
+## FOR PR :
+
+
+
+factors <- c("Positive", "Negative")
+
+
+#head(levels((data.PR$breast_carcinoma_progesterone_receptor_status)))
+
+# To put the PR status column last
+head(data.PR[,1])
+temp.PR <- data.PR[,-1]
+head(temp.PR)
+predictors.PR <- temp.PR
+print(head(predictors.PR))
+temp_PR <- cbind(temp.PR,as.data.frame(data.PR[,1]))
+head(temp_PR)
+tail(colnames(temp_PR))
+
+#change column name : 
+
+names.temp.PR <- colnames(temp_PR[,-ncol(temp_PR)])
+names.temp.PR <- c(names.temp.PR, "PR")
+colnames(temp_PR) <- names.temp.PR
+tail(colnames(temp_PR))
+head(temp_PR$PR)
+
+data.PR <- temp_PR
+head(data.PR$PR)
+levels(factor(data.PR$PR))
+ncol(data.PR)
+
+#Use only data containing PR +/- 
+data.PR.f <- data.PR[which(data.PR$PR == factors),] #we take a subset of data.ER using factors +/-
+head(data.PR.f$PR)
+x_1 <- droplevels(data.PR.f)
+head(x_1$PR)
+data.PR <- x_1
+levels(data.PR$PR)
+
+#PCA
+data1 <- data.PR[,apply(data.PR[,-ncol(data.PR)], 2, function(x) all(x > 0))] 
+pca.result <- prcomp(data1,center = TRUE, scale. = TRUE)
+summary(pca.result)
+ggbiplot(pca.result,ellipse = TRUE, groups = data.PR$PR, main = "PCA for PR status")
+
+
+
+
+#clustering 
+scatterplot3d::scatterplot3d(data.PR[,-ncol(data.PR)], labels = rownames(data.PR))
+
+
+
+
+
+## For ER : 
+
+# To put the ER status column last
+head(data.ER[,1])
+temp.ER <- data.ER[,-1]
+head(temp.ER)
+predictors.ER <- temp.ER
+print(head(predictors.ER))
+temp_ER <- cbind(temp.ER,as.data.frame(data.ER[,1]))
+head(temp_ER)
+tail(colnames(temp_ER))
+
+#change column name : 
+
+names.temp.ER <- colnames(temp_ER[,-ncol(temp_ER)])
+names.temp.ER <- c(names.temp.ER, "ER")
+colnames(temp_ER) <- names.temp.ER
+tail(colnames(temp_ER))
+head(temp_ER$ER)
+
+data.ER <- temp_ER
+head(data.ER)
+levels(factor(data.ER$ER))
+ncol(data.ER)
+
+#Use only data containing ER +/- 
+data.ER.f <- data.ER[which(data.ER$ER == factors),] #we take a subset of data.ER using factors +/-
+head(data.ER.f$ER)
+y_1 <- droplevels(data.ER.f)
+head(y_1$ER)
+data.ER <- y_1
+levels(data.ER$ER)
+
+#pca
+data2 <- data.ER[,apply(data.ER[,-ncol(data.ER)], 2, function(x) all(x > 0))] 
+pca.result.ER <- prcomp(data2,center = TRUE, scale. = TRUE)
+summary(pca.result.ER)
+ggbiplot(pca.result.ER,ellipse = TRUE, groups = data.ER$ER, main = "PCA plot for ER status")
+
+
+
+## For HER 2 : 
+
+# To put the Her2 status column last
+head(data.Her2[,1])
+temp.H <- data.Her2[,-1]
+head(temp.H)
+predictors.H <- temp.H
+print(head(predictors.H))
+temp_H <- cbind(temp.H,as.data.frame(data.Her2[,1]))
+head(temp_H)
+tail(colnames(temp_H))
+
+#change column name : 
+
+names.temp.H <- colnames(temp_H[,-ncol(temp_H)])
+names.temp.H <- c(names.temp.H, "Her")
+colnames(temp_H) <- names.temp.H
+tail(colnames(temp_H))
+head(temp_H$Her)
+
+data.Her2 <- temp_H
+head(data.Her2)
+levels(factor(data.Her2$Her))
+ncol(data.Her2)
+
+#Use only data containing Her2 +/- 
+data.H.f <- data.Her2[which(data.Her2$Her == factors),] #we take a subset of data.ER using factors +/-
+head(data.H.f$Her)
+z_1 <- droplevels(data.H.f)
+head(z_1$Her)
+data.Her2 <- z_1
+levels(data.Her2$Her)
+head(data.Her2)
+
+#pca
+#pca
+data3 <- data.Her2[,apply(data.Her2[,-ncol(data.Her2)], 2, function(x) all(x > 0))] 
+pca.result.Her <- prcomp(data3,center = TRUE, scale. = TRUE)
+summary(pca.result.Her)
+ggbiplot(pca.result.Her,ellipse = TRUE, groups = data.Her2$Her, main = "PCA plot for Her2 status")
+
+
+# To determine the outliers : 
+#Observations  arising  from  large  variation  of  the  inherent  type  are  called  outliers.Many approaches have been proposed to detect  or  identify  the  outliers  based  on  density  based,  distance  based,  distribution  based  and clustering based approaches. 
+
+#Median and trimmed mean are robust measures of location. For the measure of dispersion we can use the normalized median absolute deviation #(MADN). For a set of data the median absolute deviation(MADN). It is defined as : 
+#MAD (x) = Med {|x–Med (x)|}
+#To  make  the  MAD  comparable  to  the  SD  in  terms  of  efficiency,  we  consider  the  normalized MAD defined asMADN (x) = MAD (x) / #0.6745
+#Then Robust t like StatisticLet  us  now  use  the  robust  plug-in  technique  Imon,  Midi  and  Rana  (2013)  to  obtain  a robust  t-like  #statistic  by  replacing  mean  by  median  and  SD  by  the  normalized  median  absolute deviation (MADN). Thus the modified statistic #becomes :
+
+#t #= #xi #- #median(x)
+    #---------------
+       #MADN(x)
+       
+#Observations with |t'| >3 are identified as outliers. 
+
+## For PR : 
+#PR data without PR column
+
+data.PR_PR <- data.PR[,-ncol(data.PR)]
+head(data.PR_PR)
+
+calcul.mad <- function(x) {
+mad <- median(abs(x-median(x, na.rm=TRUE))) 
+mad}
+#print(head(mad))
+
+uper.interval <- function(x,y) {
+up.inter <- median(x, na.rm=TRUE)+2*(y) 
+up.inter}
+#print(head(up.inter))
+
+lower.interval <- function(x,y) {
+low.inter <- median(x, na.rm=TRUE)-2*(y)
+low.inter}
+#print(head(low.inter)))
+
+functionData <- function(x,h,l) {
+out <- ifelse(x > h, h, ifelse(x < l, l, x))
+out}
+#print(head(out))
+
+
+outlier.fun <- function(column1) {
+  med_data <- median(column1, na.rm=TRUE)
+  cal_mad <- calcul.mad(column1)
+  up_data <- uper.interval(med_data, cal_mad)
+  low_data <- lower.interval(med_data, cal_mad)
+  column_without_outliers <- functionData(column1, up_data, low_data)
+
+  return(column_without_outliers)
+  }
+
+data_PR_noout <- apply(data.PR_PR, 2, outlier.fun) #data, margin is 2 which means on columns 
+
+summary(data.PR_PR)
+summary(data_PR_noout)
+ncol(data_PR_noout)
+str(summary(data.PR_PR))
+str(summary(data_PR_noout))
+ncol(data_PR_noout)
+
+boxplot(data.PR_PR)
+boxplot(data_PR_noout)
+
+
+
+
+
+
+
+# Elastic net regression : 
+#For PR 
+set.seed(123)
+
+
+
+
+
+levels(data.PR$PR)
+
+
+#Both different ranges of lambda were tried out and two models were made.
+alpha.grid.PR <- seq(0,1, length = 10)
+lambda.grid.PR <- 10^seq(2, -2, length = 100) #reduced range
+#lambda.grid.PR <- 10^seq(3,-2, by = 0.1) #increasing range 
+search.grid.PR <- expand.grid(.alpha = alpha.grid.PR, .lambda = lambda.grid.PR)
+
+
+#create general elastic train function.
+PR.train.data <- function(elastic.data.PR, k_folds.PR=10, search.grid.PR){
+
+
+models.PR = list()
+outer.models.PR = list()
+test.index.list.PR = sample(1:nrow(elastic.data.PR),k_folds.PR) #reduce bias via random sampling
+LOO.index.PR <- 1
+test.PR <- c()
+
+for (i in 1:k_folds.PR) {
+  train.data.PR <- elastic.data.PR[-test.index.list.PR[LOO.index.PR],]
+  test.data.PR <- elastic.data.PR[test.index.list.PR[LOO.index.PR],]
+  test.PR <- c(test.PR, test.data.PR$PR)
+  #print(tibble(train.data))
+  #print(tibble(test.data))
+  print("-----")
+  
+  # Outer cross validation :  
+  values.PR = c()
+  avg_errors.PR <- c()
+  for (j in 1:(k_folds.PR-1)) {
+  
+    print(j)
+    
+    # Inner cross validation using Caret trainControl() does inner CV and produces 10 inner trained models.
+    train.glm.PR <- trainControl(method = "cv", number  = 10, classProbs = TRUE)
+    model.PR.glm <- train(PR ~ . , data = train.data.PR, tuneLength = 10, method = 'glmnet', trControl = train.glm.PR, metric = "Kappa", tuneGrid = search.grid.PR, preProc = c("center", "scale"),na.action = na.fail)
+    
+    models.PR[[j]] <- model.PR.glm
+    
+    #From the above 10 models, we calculate their average error(should have actually been average accuracy)
+    avg_error.PR <- mean(model.PR.glm$results$Accuracy)
+    avg_errors.PR <- c(avg_errors.PR,avg_error.PR)
+    #print(avg_errors)
+    #saveRDS(avg_errors.PR, file = "/data/vkarthik/shoo/output/PR.elasticRRL") 
+    
+    
+    #End of inner loop
+    
+  }
+  
+  #From the above average errors, we will choose a model which can be used to train the entire data, for that we subtract the accuracy of each model from its average accuracy ( average error is the variable name here ) and then check which model has minimum deviance from the avergae and choose that model to train our entire data.
+	
+  #minimum deviance from mean
+ 
+  for (element in avg_errors.PR) {
+    value.PR <- abs(mean(avg_errors.PR)-element)
+    #print(value.PR)
+    values.PR <- c(values.PR, value.PR)
+    #print(values.PR)
+    #print(element)
+    
+  }
+  #print(length(values.PR)) 
+  
+  #To show which model was selected : 
+  #Get index of models which have min value of deviance from mean of accuracy, thus that will be the optimal index. And we will only print out the model chosen by this method.
+  optimal.index.PR <- which(min(values.PR)== values.PR) 
+  print(optimal.index.PR)
+  print(models.PR[[optimal.index.PR]]$bestTune)#get the model corresponding to that index
+   #save(models.PR, file = "/data/vkarthik/shoo/output/PR.elasticRRL") 
+  
+  
+  #From the above chosen model, we consider it to have the best hyperparameters and train on that entire outer fold train data and then calculate  std error:
+
+   #Outer training
+  
+  #Value.grid will be the grid of best values of alpha and lambda we got from inner fold CV. And then we train again using caret function.
+
+  value.grid.PR <- expand.grid(.alpha = models.PR[[optimal.index.PR]]$bestTune$alpha, .lambda = models.PR[[optimal.index.PR]]$bestTune$lambda)
+  PR.train.glm <- trainControl(method = "cv", number  = 10, classProbs = TRUE)
+  final_model.PR.glm <- train(PR ~ . , data = train.data.PR, tuneLength = 10, method = 'glmnet', trControl = PR.train.glm, metric = "Kappa",tuneGrid = value.grid.PR , preProc = c("center", "scale"),na.action = na.fail)
+    outer.models.PR[[i]] <- final_model.PR.glm
+    print(outer.models.PR)
+  
+    
+    LOO.index.PR <- LOO.index.PR +1
+}
+
+
+    #Std errors : 
+    #Get the mean of all accuracies : 
+    #We get a list as model output, so we select specific items and since result was 4th we use lapply on 4th and then accuracy was 3rd so we use lapply for 3 to get accuracy values
+    
+    accuracies.PR <- unlist(lapply(lapply(outer.models.PR, '[[', 4),'[[',3))
+    #print(accuracies.PR)
+    outer_mean.PR <- mean(accuracies.PR) 
+    #print(outer_mean.PR)
+    
+    
+   #Thus we again calculate the mean of accuracy , subtract each accuracy from the mean and get outer_values
+    outer_values.PR <- c()
+  for (number.PR in accuracies.PR) {
+    outer_value.PR <- (outer_mean.PR - number.PR)^2
+    #print(outer_value.PR)
+    outer_values.PR <- c(outer_values.PR, outer_value.PR)
+    #print(outer_values.PR)
+  }
+  
+    # We calculate the sd of outer_values
+    sd_outer.PR <- sd(outer_values.PR)
+    #print(sd_outer.PR)
+    
+    #standard error will be sd divided by sqrt of sample size , if the std_error is small we proceed with testing our data using the optimal train model. If it is large we need to repeat CV again. 
+
+    std_error.PR <- sd_outer.PR/ sqrt(length(elastic.data.PR))
+    print(std_error.PR)
+    #saveRDS(std_error.PR, file = "/data/vkarthik/shoo/output/PR.elasticRRL") 
+
+    
+    #To choose a model to be used for testing the data :
+    outer_vs.PR <- c()  
+    for (number in outer_values.PR) {
+    outer_v.PR <- (std_error.PR - number)^2
+    #print(outer_v.PR)
+    outer_vs.PR <- c(outer_vs.PR, outer_v.PR)
+    
+      }
+    
+    #print(outer_vs.PR)
+    
+    #Choose the model : 
+    final_index.PR <- which(min(outer_vs.PR) == outer_vs.PR)
+    print(final_index.PR)
+    #saveRDS(final_index.PR, file = "/data/vkarthik/shoo/output/PR.elasticRRL") 
+    
+     plot.new()
+  
+    #plot of model selection
+     png(file="Elastic train for PR.png",width=640,height=480)
+   { plot(avg_errors.PR, type = "line", main = "Model selected to train Elastic net regression for PR status")
+    abline(h = mean(avg_errors.PR))
+    abline(v = optimal.index.PR)}
+     dev.off()
+     
+     plot.new()
+  
+    #plot of model selection
+    png(file="Elastic test for PR.png",width=640,height=480)
+   { plot(avg_errors.PR, type = "line", main = "Model selected to test Elastic net regression for PR status")
+    abline(h = mean(avg_errors.PR))
+    abline(v = final_index.PR)}
+     dev.off()
+    
+    #since many models were performing same, with same accuracies , we randomly choose a model
+    if(length(final_index.PR) > 1){
+      final_index.PR = sample(1:length(final_index.PR),1)
+    }
+    outer.models.PR[[final_index.PR]]
+    print(outer.models.PR[[final_index.PR]])
+    #saveRDS(outer.models.PR, file = "/data/vkarthik/shoo/output/PR.elasticRRL") 
+  
+    #Test data 
+  
+    predict.PR.glmnet <- predict(outer.models.PR[[final_index.PR]], test.data.PR)
+    print(predict.PR.glmnet)
+    #saveRDS(predict.PR.glmnet, file = "/data/vkarthik/shoo/output/PR.elasticRRL") 
+  
+    png(file="Elastic net test results for PR.png",width=640,height=480)
+    plot(predict.PR.glmnet)
+    dev.off()
+
+   
+saveRDS(avg_errors.PR, file = "/data/vkarthik/shoo/output/PR.elasticRRL")
+saveRDS(std_error.PR, file = "/data/vkarthik/shoo/output/PR.elasticRRL")  
+saveRDS(test.PR, file = "/data/vkarthik/shoo/output/PR.elasticRRL")
+saveRDS(predict.PR.glmnet, file = "/data/vkarthik/shoo/output/PR.elasticRRL") 
+saveRDS(final_index.PR, file = "/data/vkarthik/shoo/output/PR.elasticRRL")  
+   
+   
+  return(outer.models.PR[[final_index.PR]])
+
+}
+
+
+
+ elastic.PR <- PR.train.data(data.PR, 10, search.grid.PR = search.grid.PR)
+ elastic.PR
+
+
+# For ER : 
+set.seed(123)
+
+
+
+
+#Both different ranges of lambda were tried out and two models were made.
+alpha.grid.ER <- seq(0,1, length = 10)
+lambda.grid.ER <- 10^seq(2, -2, length = 100) #reduced range
+#lambda.grid.ER <- 10^seq(3,-2, by = 0.1) #increasing range 
+search.grid.ER <- expand.grid(.alpha = alpha.grid.ER, .lambda = lambda.grid.ER)
+
+
+#create general elastic net train function.
+ER.train.data <- function(elastic.data.ER, k_folds.ER=10, search.grid.ER){
+
+
+models.ER = list()
+outer.models.ER = list()
+test.index.list.ER = sample(1:nrow(elastic.data.ER),k_folds.ER) #reduce bias via random sampling
+LOO.index.ER <- 1
+test.ER <- c()
+
+for (i in 1:k_folds.ER) {
+  train.data.ER <- elastic.data.ER[-test.index.list.ER[LOO.index.ER],]
+  test.data.ER <- elastic.data.ER[test.index.list.ER[LOO.index.ER],]
+  test.ER <- c(test.ER, test.data.ER$ER)
+  #print(tibble(train.data))
+  #print(tibble(test.data))
+  print("-----")
+  
+  # Outer cross validation :  
+  values.ER = c()
+  avg_errors.ER <- c()
+  for (j in 1:(k_folds.ER-1)) {
+  
+    print(j)
+    
+    # Inner cross validation using Caret trainControl() does inner CV and produces 10 inner trained models.
+    train.glm.ER <- trainControl(method = "cv", number  = 10, classProbs = TRUE)
+    model.ER.glm <- train(ER ~ . , data = train.data.ER, tuneLength = 10, method = 'glmnet', trControl = train.glm.ER, metric = "Kappa", tuneGrid = search.grid.ER, preProc = c("center", "scale"),na.action = na.fail)
+    
+    models.ER[[j]] <- model.ER.glm
+    
+    #From the above 10 models, we calculate their average error(should have actually been average accuracy)
+    avg_error.ER <- mean(model.ER.glm$results$Accuracy)
+    avg_errors.ER <- c(avg_errors.ER,avg_error.ER)
+    #print(avg_errors.ER)
+    #saveRDS(avg_errors.ER, file = "/data/vkarthik/shoo/output/ER.elasticRRL") 
+    
+    
+    #End of inner loop
+    
+  }
+  
+  #From the above average errors, we will choose a model which can be used to train the entire data, for that we subtract the accuracy of each model from its average accuracy ( average error is the variable name here ) and then check which model has minimum deviance from the avergae and choose that model to train our entire data.
+	
+  #minimum deviance from mean
+ 
+  for (element.ER in avg_errors.ER) {
+    value.ER <- (mean(avg_errors.ER)-element.ER)^2
+    #print(value.ER)
+    values.ER <- c(values.ER, value.ER)
+    #print(values.ER)
+    #print(element.ER)
+    
+  }
+ # print(length(values.ER)) 
+  
+  #To show which model was selected : 
+  #Get index of models which have min value of deviance from mean of accuracy, thus that will be the optimal index. And we will only print out the model chosen by this method.
+  optimal.index.ER <- which(min(values.ER)== values.ER) 
+  print(optimal.index.ER)
+  print(models.ER[[optimal.index.ER]]$bestTune)#get the model corresponding to that index 
+  
+  
+  #From the above chosen model, we consider it to have the best hyperparameters and train on that entire outer fold train data and then calculate  std error:
+
+   #Outer training
+  
+  #Value.grid will be the grid of best values of alpha and lambda we got from inner fold CV. And then we train again using caret function.
+
+  value.grid.ER <- expand.grid(.alpha = models.ER[[optimal.index.ER]]$bestTune$alpha, .lambda = models.ER[[optimal.index.ER]]$bestTune$lambda)
+  ER.train.glm <- trainControl(method = "cv", number  = 10, classProbs = TRUE)
+  final_model.ER.glm <- train(ER ~ . , data = train.data.ER, tuneLength = 10, method = 'glmnet', trControl = ER.train.glm, metric = "Kappa",tuneGrid = value.grid.ER , preProc = c("center", "scale"),na.action = na.fail)
+    outer.models.ER[[i]] <- final_model.ER.glm
+    print(outer.models.ER)
+  
+    
+    LOO.index.ER <- LOO.index.ER +1
+}
+
+
+    #Std errors : 
+    #Get the mean of all accuracies : 
+    #We get a list as model output, so we select specific items and since result was 4th we use lapply on 4th and then accuracy was 3rd so we use lapply for 3 to get accuracy values
+    
+    accuracies.ER <- unlist(lapply(lapply(outer.models.ER, '[[', 4),'[[',3))
+   # print(accuracies.ER)
+    outer_mean.ER <- mean(accuracies.ER) 
+    #print(outer_mean.ER)
+    
+    
+   #Thus we again calculate the mean of accuracy , subtract each accuracy from the mean and get outer_values
+    outer_values.ER <- c()
+  for (number.ER in accuracies.ER) {
+    outer_value.ER <- (outer_mean.ER - number.ER)^2
+    #print(outer_value.ER)
+    outer_values.ER <- c(outer_values.ER, outer_value.ER)
+    #print(outer_values.ER)
+  }
+  
+    # We calculate the sd of outer_values
+    sd_outer.ER <- sd(outer_values.ER)
+   # print(sd_outer.ER)
+    
+    #standard error will be sd divided by sqrt of sample size , if the std_error is small we proceed with testing our data using the optimal train model. If it is large we need to repeat CV again. 
+
+    std_error.ER <- sd_outer.ER/ sqrt(length(elastic.data.ER))
+    print(std_error.ER)
+    #saveRDS(std_error.ER, file = "/data/vkarthik/shoo/output/ER.elasticRRL") 
+
+    
+    #To choose a model to be used for testing the data :
+    outer_vs.ER <- c()  
+    for (number.ER in outer_values.ER) {
+    outer_v.ER <- (std_error.ER - number.ER)^2
+    #print(outer_v.ER)
+    outer_vs.ER <- c(outer_vs.ER, outer_v.ER)
+    
+      }
+    
+    #print(outer_vs.ER)
+    
+    #Choose the model : 
+    final_index.ER <- which(min(outer_vs.ER) == outer_vs.ER)
+    print(final_index.ER)
+    #saveRDS(final_index.ER, file = "/data/vkarthik/shoo/output/ER.elasticRRL") 
+    
+    
+     plot.new()
+  
+    #plot of model selection
+     png(file="Elastic net train for ER.png",width=640,height=480)
+   { plot(avg_errors.ER, type = "line", main = "Model selected to train Elastic net regression for ER status")
+    abline(h = mean(avg_errors.ER))
+    abline(v = optimal.index.ER)}
+    dev.off()
+     
+     plot.new()
+  
+    #plot of model selection
+     png(file="Elastic net test for ER.png",width=640,height=480)
+   { plot(avg_errors.ER, type = "line", main = "Model selected to test Elastic net regression for ER status")
+    abline(h = mean(avg_errors.ER))
+    abline(v = final_index.ER)}
+     dev.off()
+    
+    #since many models were performing same, with same accuracies , we randomly choose a model
+    if(length(final_index.ER) > 1){
+      final_index.ER = sample(1:length(final_index.ER),1)
+    }
+    outer.models.ER[[final_index.ER]]
+    print(outer.models.ER[[final_index.ER]])
+    #saveRDS(outer.models.ER, file = "/data/vkarthik/shoo/output/ER.elasticRRL") 
+    
+    #Test data 
+  
+    predict.ER.glmnet <- predict(outer.models.ER[[final_index.ER]], test.data.ER)
+    print(predict.ER.glmnet)
+    #saveRDS(predict.ER.glmnet, file = "/data/vkarthik/shoo/output/ER.elasticRRL") 
+    png(file="Elastic net test results for ER.png",width=640,height=480)
+    plot(predict.ER.glmnet)
+    dev.off()
+
+   
+saveRDS(avg_errors.ER, file = "/data/vkarthik/shoo/output/ER.elasticRRL")
+saveRDS(std_error.ER, file = "/data/vkarthik/shoo/output/ER.elasticRRL")  
+saveRDS(test.ER, file = "/data/vkarthik/shoo/output/ER.elasticRRL")
+saveRDS(predict.ER.glmnet, file = "/data/vkarthik/shoo/output/ER.elasticRRL") 
+saveRDS(final_index.ER, file = "/data/vkarthik/shoo/output/ER.ridgeIRL")  
+   
+   
+  return(outer.models.ER[[final_index.ER]])
+
+}
+
+
+
+ elastic.ER <- ER.train.data(data.ER, 10, search.grid.ER = search.grid.ER)
+ elastic.ER
+
+#For her2 : 
+
+# For Her2 : 
+set.seed(123)
+
+
+
+#Both different ranges of lambda were tried out and two models were made.
+alpha.grid.H <- seq(0,1, length = 10)
+lambda.grid.H <- 10^seq(2, -2, length = 100) #reduced range
+#lambda.grid.H <- 10^seq(3,-2, by = 0.1) #increasing range 
+search.grid.H <- expand.grid(.alpha = alpha.grid.H, .lambda = lambda.grid.H)
+
+
+#create general Elastic net train function.
+H.train.data <- function(elastic.data.H, k_folds.H=10, search.grid.H){
+
+
+models.H = list()
+outer.models.H = list()
+test.index.list.H = sample(1:nrow(elastic.data.H),k_folds.H) #reduce bias via random sampling
+LOO.index.H <- 1
+test.H <- c()
+
+for (i in 1:k_folds.H) {
+  train.data.H <- elastic.data.H[-test.index.list.H[LOO.index.H],]
+  test.data.H <- elastic.data.H[test.index.list.H[LOO.index.H],]
+  test.H <- c(test.H, test.data.H$Her)
+  #print(tibble(train.data))
+  #print(tibble(test.data))
+  print("-----")
+  
+  # Outer cross validation :  
+  values.H = c()
+  avg_errors.H <- c()
+  for (j in 1:(k_folds.H-1)) {
+  
+    print(j)
+    
+    # Inner cross validation using Caret trainControl() does inner CV and produces 10 inner trained models.
+    train.glm.H <- trainControl(method = "cv", number  = 10, classProbs = TRUE)
+    model.H.glm <- train(Her ~ . , data = train.data.H, tuneLength = 10, method = 'glmnet', trControl = train.glm.H, metric = "Kappa", tuneGrid = search.grid.H, preProc = c("center", "scale"),na.action = na.fail)
+    
+    models.H[[j]] <- model.H.glm
+    
+    #From the above 10 models, we calculate their average error(should have actually been average accuracy)
+    avg_error.H <- mean(model.H.glm$results$Accuracy)
+    avg_errors.H <- c(avg_errors.H,avg_error.H)
+    #print(avg_errors.H)
+    #saveRDS(avg_errors.H, file = "/data/vkarthik/shoo/output/H.elasticRRL") 
+    
+    
+    #End of inner loop
+    
+  }
+  
+  #From the above average errors, we will choose a model which can be used to train the entire data, for that we subtract the accuracy of each model from its average accuracy ( average error is the variable name here ) and then check which model has minimum deviance from the avergae and choose that model to train our entire data.
+	
+  #minimum deviance from mean
+ 
+  for (element.H in avg_errors.H) {
+    value.H <- abs(mean(avg_errors.H)-element.H)
+    #print(value.H)
+    values.H <- c(values.H, value.H)
+    #print(values.H)
+    #print(element.H)
+    
+  }
+  #print(length(values.H)) 
+  
+  #To show which model was selected : 
+  #Get index of models which have min value of deviance from mean of accuracy, thus that will be the optimal index. And we will only print out the model chosen by this method.
+  optimal.index.H <- which(min(values.H)== values.H) 
+  #print(optimal.index.H)
+  #print(models.H[[optimal.index.H]]$bestTune)#get the model corresponding to that index 
+  
+  
+  #From the above chosen model, we consider it to have the best hyperparameters and train on that entire outer fold train data and then calculate  std error:
+
+   #Outer training
+  
+  #Value.grid will be the grid of best values of alpha and lambda we got from inner fold CV. And then we train again using caret function.
+
+  value.grid.H <- expand.grid(.alpha = models.H[[optimal.index.H]]$bestTune$alpha, .lambda = models.H[[optimal.index.H]]$bestTune$lambda)
+  H.train.glm <- trainControl(method = "cv", number  = 10, classProbs = TRUE)
+  final_model.H.glm <- train(Her ~ . , data = train.data.H, tuneLength = 10, method = 'glmnet', trControl = H.train.glm, metric = "Kappa",tuneGrid = value.grid.H , preProc = c("center", "scale"),na.action = na.fail)
+    outer.models.H[[i]] <- final_model.H.glm
+    print(outer.models.H)
+  
+    
+    LOO.index.H <- LOO.index.H +1
+}
+
+
+    #Std errors : 
+    #Get the mean of all accuracies : 
+    #We get a list as model output, so we select specific items and since result was 4th we use lapply on 4th and then accuracy was 3rd so we use lapply for 3 to get accuracy values
+    
+    accuracies.H <- unlist(lapply(lapply(outer.models.H, '[[', 4),'[[',3))
+    #print(accuracies.H)
+    outer_mean.H <- mean(accuracies.H) 
+    #print(outer_mean)
+    
+    
+   #Thus we again calculate the mean of accuracy , subtract each accuracy from the mean and get outer_values
+    outer_values.H <- c()
+  for (number.H in accuracies.H) {
+    outer_value.H <- (outer_mean.H - number.H)^2
+    #print(outer_value.H)
+    outer_values.H <- c(outer_values.H, outer_value.H)
+    #print(outer_values.H)
+  }
+  
+    # We calculate the sd of outer_values
+    sd_outer.H <- sd(outer_values.H)
+    #print(sd_outer.H)
+    
+    #standard error will be sd divided by sqrt of sample size , if the std_error is small we proceed with testing our data using the optimal train model. If it is large we need to repeat CV again. 
+
+    std_error.H <- sd_outer.H/ sqrt(length(elastic.data.H))
+    print(std_error.H)
+    #saveRDS(std_error.H, file = "/data/vkarthik/shoo/output/H.elasticRRL") 
+
+    
+    #To choose a model to be used for testing the data :
+    outer_vs.H <- c()  
+    for (number.H in outer_values.H) {
+    outer_v.H <- (std_error.H - number.H)^2
+    #print(outer_v.H)
+    outer_vs.H <- c(outer_vs.H, outer_v.H)
+    
+      }
+    
+    #print(outer_vs.H)
+    
+    #Choose the model : 
+    final_index.H <- which(min(outer_vs.H) == outer_vs.H)
+    print(final_index.H)
+   # saveRDS(final_index.H, file = "/data/vkarthik/shoo/output/H.elasticRRL") 
+    
+     plot.new()
+  
+    #plot of model selection
+     png(file="Elastic train for Her.png",width=640,height=480)
+   { plot(avg_errors.H, type = "line", main = "Model selected to train Elastic net regression for Her2 status")
+    abline(h = mean(avg_errors.H))
+    abline(v = optimal.index.H)}
+     dev.off()
+     plot.new()
+  
+    #plot of model selection
+     png(file="Elastic test for Her.png",width=640,height=480)
+   { plot(avg_errors.H, type = "line", main = "Model selected to test Elastic net regression for Her2 status")
+    abline(h = mean(avg_errors.H))
+    abline(v = final_index.H)}
+    dev.off()
+    
+    #since many models were performing same, with same accuracies , we randomly choose a model
+    if(length(final_index.H) > 1){
+      final_index.H = sample(1:length(final_index.H),1)
+    }
+    outer.models.H[[final_index.H]]
+    print(outer.models.H[[final_index.H]])
+    #saveRDS(outer.models.H, file = "/data/vkarthik/shoo/output/H.elasticRRL") 
+    
+    #Test data 
+  
+    predict.H.glmnet <- predict(outer.models.H[[final_index.H]], test.data.H)
+    print(predict.H.glmnet)
+    #saveRDS(predict.H.glmnet, file = "/data/vkarthik/shoo/output/H.elasticRRL") 
+    png(file="Elastic net test for testIRL.png",width=640,height=480)
+    plot(predict.H.glmnet)
+    dev.off()
+
+   
+saveRDS(avg_errors.H, file = "/data/vkarthik/shoo/output/H.elasticRRL")
+saveRDS(std_error.H, file = "/data/vkarthik/shoo/output/H.elasticRRL")  
+saveRDS(test.H, file = "/data/vkarthik/shoo/output/H.elasticRRL")
+saveRDS(predict.H.glmnet, file = "/data/vkarthik/shoo/output/H.elasticRRL") 
+saveRDS(final_index.H, file = "/data/vkarthik/shoo/output/H.elasticRRL")  
+   
+  return(outer.models.H[[final_index.H]])
+
+}
+
+
+
+ elastic.H <- H.train.data(data.Her2, 10, search.grid.H = search.grid.H)
+ elastic.H
